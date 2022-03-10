@@ -1,0 +1,364 @@
+<template>
+  <api-base-component
+    v-loading="loading"
+    @copy="copyRow"
+    @remove="remove"
+    @active="active"
+    @openScenario="openScenario"
+    :data="scenario"
+    :show-collapse="false"
+    :is-show-name-input="!isDeletedOrRef"
+    :is-disabled="true"
+    :is-max="isMax"
+    :show-btn="showBtn"
+    color="#606266"
+    background-color="#F4F4F5"
+    title='场景'>
+
+    <template v-slot:afterTitle v-if="isSameSpace">
+      <span v-if="isShowNum" @click = "clickResource(scenario)">{{"（ ID: "+scenario.num+"）"}}</span>
+      <span v-else >
+        <el-tooltip class="ms-num" effect="dark" :content="$t('api_test.automation.scenario.num_none')" placement="top">
+          <i class="el-icon-warning"/>
+        </el-tooltip>
+      </span>
+    </template>
+
+    <template v-slot:behindHeaderLeft>
+      <el-tag size="mini" class="ms-tag" v-if="scenario.referenced==='Deleted'" type="danger">{{ $t('api_test.automation.reference_deleted') }}</el-tag>
+      <el-tag size="mini" class="ms-tag" v-if="scenario.referenced==='Copy'">{{ $t('commons.copy') }}</el-tag>
+      <el-tag size="mini" class="ms-tag" v-if="scenario.referenced==='REF'">{{ $t('api_test.scenario.reference') }}</el-tag>
+      <span class="ms-tag ms-step-name-api">{{ getProjectName(scenario.projectId) }}</span>
+    </template>
+    <template v-slot:debugStepCode>
+       <span v-if="node.data.testing" class="ms-test-running">
+         <i class="el-icon-loading" style="font-size: 16px"/>
+         {{ $t('commons.testing') }}
+       </span>
+      <span class="ms-step-debug-code" :class="node.data.code ==='error'?'ms-req-error':'ms-req-success'" v-if="!loading && node.data.debug && !node.data.testing">
+        {{ getCode() }}
+      </span>
+    </template>
+    <template v-slot:scenarioEnable>
+      <el-tooltip content="启用场景环境：当前步骤使用场景原始环境配置运行" placement="top">
+        <el-checkbox v-model="scenario.environmentEnable" @change="checkEnv" :disabled="scenario.disabled">启用场景环境</el-checkbox>
+      </el-tooltip>
+    </template>
+    <template v-slot:button>
+      <el-tooltip :content="$t('api_test.run')" placement="top" v-if="!scenario.run">
+        <el-button :disabled="!scenario.enable" @click="run" icon="el-icon-video-play" style="padding: 5px" class="ms-btn" size="mini" circle/>
+      </el-tooltip>
+      <el-tooltip :content="$t('report.stop_btn')" placement="top" :enterable="false" v-else>
+        <el-button :disabled="!scenario.enable" @click.once="stop" size="mini" style="color:white;padding: 0 0.1px;width: 24px;height: 24px;" class="stop-btn" circle>
+          <div style="transform: scale(0.66)">
+            <span style="margin-left: -4.5px;font-weight: bold;">STOP</span>
+          </div>
+        </el-button>
+      </el-tooltip>
+    </template>
+
+  </api-base-component>
+</template>
+
+<script>
+import MsSqlBasisParameters from "../../../definition/components/request/database/BasisParameters";
+import MsTcpBasisParameters from "../../../definition/components/request/tcp/TcpBasisParameters";
+import MsDubboBasisParameters from "../../../definition/components/request/dubbo/BasisParameters";
+import MsApiRequestForm from "../../../definition/components/request/http/ApiHttpRequestForm";
+import ApiBaseComponent from "../common/ApiBaseComponent";
+import {getCurrentProjectID, getCurrentWorkspaceId, getUUID, strMapToObj} from "@/common/js/utils";
+
+export default {
+  name: "ApiScenarioComponent",
+  props: {
+    scenario: {},
+    message: String,
+    node: {},
+    isMax: {
+      type: Boolean,
+      default: false,
+    },
+    showBtn: {
+      type: Boolean,
+      default: true,
+    },
+    draggable: {
+      type: Boolean,
+      default: false,
+    },
+    currentEnvironmentId: String,
+    projectList: Array,
+    environmentType: String,
+    environmentGroupId: String,
+    envMap: Map
+  },
+  watch: {
+    message() {
+      if (this.message === "stop") {
+        this.scenario.run = false;
+      }
+      this.reload();
+    },
+  },
+  created() {
+    if(this.scenario.num){
+      this.isShowNum = true;
+    }
+    if (!this.scenario.projectId) {
+      this.scenario.projectId = getCurrentProjectID();
+    }
+    if (this.scenario.id && this.scenario.referenced === 'REF' && !this.scenario.loaded) {
+      this.result = this.$get("/api/automation/getApiScenario/" + this.scenario.id, response => {
+        if (response.data) {
+          this.scenario.loaded = true;
+          let obj = {};
+          if (response.data.scenarioDefinition) {
+            obj = JSON.parse(response.data.scenarioDefinition);
+            this.scenario.hashTree = obj.hashTree;
+          }
+          this.scenario.projectId = response.data.projectId;
+          const pro = this.projectList.find(p => p.id === response.data.projectId);
+          if (!pro) {
+            this.scenario.projectId = getCurrentProjectID();
+          }
+          if (this.scenario.hashTree) {
+            this.setDisabled(this.scenario.hashTree, this.scenario.projectId);
+          }
+          if(response.data.num){
+            this.scenario.num = response.data.num;
+            this.getWorkspaceId(response.data.projectId);
+          }
+          this.scenario.name = response.data.name;
+          this.scenario.headers = obj.headers;
+          this.scenario.variables = obj.variables;
+          this.scenario.environmentMap = obj.environmentMap;
+          this.$emit('refReload');
+        }
+      })
+    }
+    else if(this.scenario.id && (this.scenario.referenced === 'Copy'||this.scenario.referenced === 'Created') && !this.scenario.loaded){
+      this.result = this.$get("/api/automation/getApiScenario/" + this.scenario.id, response => {
+        if (response.data) {
+          if(response.data.num){
+            this.scenario.num = response.data.num;
+            this.getWorkspaceId(response.data.projectId);
+          }else {
+            this.isSameSpace = false
+          }
+        } else {
+          this.isSameSpace = false
+        }
+      })
+    }
+  },
+  components: {ApiBaseComponent, MsSqlBasisParameters, MsTcpBasisParameters, MsDubboBasisParameters, MsApiRequestForm},
+  data() {
+    return {
+      loading: false,
+      isShowInput: false,
+      isShowNum:false,
+      isSameSpace:true
+    }
+  },
+  computed: {
+    isDeletedOrRef() {
+      if (this.scenario.referenced != undefined && this.scenario.referenced === 'Deleted' || this.scenario.referenced === 'REF') {
+        return true;
+      }
+      return false;
+    },
+    projectId() {
+      return getCurrentProjectID();
+    },
+  },
+  methods: {
+    run() {
+      this.scenario.run = true;
+      this.$emit('runScenario', this.scenario);
+    },
+    stop() {
+      this.scenario.run = false;
+      this.$emit('stopScenario');
+      this.reload();
+    },
+    checkEnv(val) {
+      this.$get("/api/automation/checkScenarioEnv/" + this.scenario.id, res => {
+        if (this.scenario.environmentEnable && !res.data) {
+          this.scenario.environmentEnable = false;
+          this.$warning("当前场景没有环境，需要先设置自身环境");
+          return;
+        }
+        this.setDomain(val);
+      });
+    },
+    setDomain(val) {
+      let param = {
+        environmentEnable: val,
+        id: this.scenario.id,
+        environmentType: this.environmentType,
+        environmentGroupId: this.environmentGroupId,
+        environmentMap: strMapToObj(this.envMap),
+        definition: JSON.stringify(this.scenario)
+      }
+      this.$post("/api/automation/setDomain", param, res => {
+        if (res.data) {
+          let data = JSON.parse(res.data);
+          this.scenario.hashTree = data.hashTree;
+        }
+      })
+    },
+    getCode() {
+      if (this.node && this.node.data.code && this.node.data.debug) {
+        if (this.node.data.code && this.node.data.code === 'error') {
+          return 'error';
+        } else {
+          return 'success';
+        }
+      }
+      return '';
+    },
+    remove() {
+      this.$emit('remove', this.scenario, this.node);
+    },
+    active() {
+      if (this.node) {
+        this.node.expanded = !this.node.expanded;
+      }
+      this.reload();
+    },
+    copyRow() {
+      this.$emit('copyRow', this.scenario, this.node);
+    },
+    openScenario(data) {
+      this.$emit('openScenario', data);
+    },
+    reload() {
+      this.loading = true
+      this.$nextTick(() => {
+        this.loading = false
+      })
+    },
+    recursive(arr, id) {
+      for (let i in arr) {
+        arr[i].disabled = true;
+        arr[i].projectId = this.calcProjectId(arr[i].projectId, id);
+        if (arr[i].hashTree != undefined && arr[i].hashTree.length > 0) {
+          this.recursive(arr[i].hashTree, arr[i].projectId);
+        }
+      }
+    },
+    setDisabled(scenarioDefinition, id) {
+      for (let i in scenarioDefinition) {
+        scenarioDefinition[i].disabled = true;
+        scenarioDefinition[i].projectId = this.calcProjectId(scenarioDefinition[i].projectId, id);
+        if (scenarioDefinition[i].hashTree != undefined && scenarioDefinition[i].hashTree.length > 0) {
+          this.recursive(scenarioDefinition[i].hashTree, scenarioDefinition[i].projectId);
+        }
+      }
+    },
+    calcProjectId(projectId, parentId) {
+      if (!projectId) {
+        return parentId ? parentId : getCurrentProjectID();
+      } else {
+        const project = this.projectList.find(p => p.id === projectId);
+        if (project) {
+          return projectId;
+        }
+        return parentId ? parentId : getCurrentProjectID();
+      }
+    },
+    getProjectName(id) {
+      if (this.projectId !== id) {
+        const project = this.projectList.find(p => p.id === id);
+        return project ? project.name : "";
+      }
+
+    },
+    clickResource(resource) {
+      let automationData = this.$router.resolve({
+        name: 'ApiAutomation',
+        params: {redirectID: getUUID(), dataType: "scenario", dataSelectRange: 'edit:' + resource.id,projectId:resource.projectId}
+      });
+      window.open(automationData.href, '_blank');
+    },
+    getWorkspaceId(projectId){
+      this.$get("/project/get/" + projectId, response => {
+        if(response.data){
+          if(response.data.workspaceId===getCurrentWorkspaceId()){
+            this.isShowNum = true;
+          }else {
+            this.isSameSpace = false;
+          }
+        }
+      });
+    }
+  }
+}
+</script>
+
+<style scoped>
+
+/deep/ .el-card__body {
+  padding: 6px 10px;
+}
+
+.icon.is-active {
+  transform: rotate(90deg);
+}
+
+.ms-step-name-api {
+  padding-left: 10px;
+}
+
+.ms-tag {
+  margin-left: 0px;
+}
+
+.ms-req-error {
+  color: #F56C6C;
+}
+
+.ms-test-running {
+  color: #6D317C;
+}
+
+.ms-req-success {
+  color: #67C23A;
+}
+
+.ms-btn {
+  background-color: #409EFF;
+  color: white;
+}
+
+.ms-btn-flot {
+  margin: 20px;
+  float: right;
+}
+
+.stop-btn {
+  background-color: #E62424;
+  border-color: #EE6161;
+  color: white;
+}
+
+.ms-step-debug-code {
+  display: inline-block;
+  margin: 0 5px;
+  overflow-x: hidden;
+  padding-bottom: 0;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  white-space: nowrap;
+  width: 60px;
+}
+
+.ms-test-running {
+  color: #6D317C;
+}
+.ms-num{
+  margin-left: 1rem;
+  font-size: 15px;
+  color: #de9d1c;
+}
+</style>

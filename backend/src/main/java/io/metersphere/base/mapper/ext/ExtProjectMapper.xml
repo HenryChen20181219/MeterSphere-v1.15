@@ -1,0 +1,254 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd" >
+<mapper namespace="io.metersphere.base.mapper.ext.ExtProjectMapper">
+    <sql id="condition">
+        <include refid="io.metersphere.base.mapper.ext.ExtApiTestMapper.condition"/>
+    </sql>
+    <sql id="combine">
+        <if test='${condition}.name != null and (${name} == null or ${name} == "")'>
+            AND p.name
+            <include refid="condition">
+                <property name="object" value="${condition}.name"/>
+            </include>
+        </if>
+        <if test="${condition}.updateTime != null">
+            AND p.update_time
+            <include refid="condition">
+                <property name="object" value="${condition}.updateTime"/>
+            </include>
+        </if>
+        <if test="${condition}.createTime != null">
+            AND p.create_time
+            <include refid="condition">
+                <property name="object" value="${condition}.createTime"/>
+            </include>
+        </if>
+        <if test="${condition}.creator != null">
+            AND p.create_user
+            <include refid="condition">
+                <property name="object" value="${condition}.creator"/>
+            </include>
+        </if>
+    </sql>
+
+    <select id="getProjectWithWorkspace" resultType="io.metersphere.dto.ProjectDTO">
+        SELECT p.id,
+               p.workspace_id,
+               p.name,
+               p.description,
+               p.update_time,
+               p.issue_template_id,
+               p.case_template_id,
+               p.create_time,
+               w.id               AS workspaceId,
+               w.name             AS workspaceName,
+               p.tapd_id,
+               p.jira_key,
+               p.zentao_id,
+               p.azure_devops_id,
+               p.repeatable,
+               p.custom_num,
+               p.azure_filter_id,
+               user.name          AS createUserName,
+               p.mock_tcp_port    AS mockTcpPort,
+               p.is_mock_tcp_open AS isMockTcpOpen,
+               p.scenario_custom_num
+        FROM project p
+                     JOIN workspace w ON p.workspace_id = w.id
+                     LEFT JOIN user ON user.id = p.create_user
+        <where>
+            <if test="proRequest.combine != null">
+                <include refid="combine">
+                    <property name="condition" value="proRequest.combine"/>
+                    <property name="name" value="proRequest.name"/>
+                </include>
+            </if>
+            <if test="proRequest.filters != null and proRequest.filters.size() > 0">
+                <foreach collection="proRequest.filters.entrySet()" index="key" item="values">
+                    <if test="values != null and values.size() > 0">
+                        <choose>
+                            <when test="key == 'create_user'">
+                                AND p.create_user IN
+                                <foreach collection="values" item="value" separator="," open="(" close=")">
+                                    #{value}
+                                </foreach>
+                            </when>
+                            <when test="key == 'project_id'">
+                                AND p.id IN
+                                <foreach collection="values" item="value" separator="," open="(" close=")">
+                                    #{value}
+                                </foreach>
+                            </when>
+                            <when test="key == 'workspace_id'">
+                                AND p.workspace_id IN
+                                <foreach collection="values" item="value" separator="," open="(" close=")">
+                                    #{value}
+                                </foreach>
+                            </when>
+                        </choose>
+                    </if>
+                </foreach>
+            </if>
+            <if test="proRequest.name != null and proRequest.name != ''">
+                AND p.name LIKE #{proRequest.name, jdbcType=VARCHAR}
+            </if>
+            <if test="proRequest.workspaceId != null">
+                AND w.id = #{proRequest.workspaceId}
+            </if>
+            <if test="proRequest.projectId != null">
+                AND p.id = #{proRequest.projectId}
+            </if>
+        </where>
+        <if test="proRequest.orders != null and proRequest.orders.size() > 0">
+            ORDER BY
+            <foreach collection="proRequest.orders" separator="," item="order">
+                p.${order.name} ${order.type}
+            </foreach>
+        </if>
+    </select>
+    <select id="getProjectIdByWorkspaceId" resultType="java.lang.String">
+        SELECT id
+        FROM project
+        WHERE workspace_id = #{workspaceId}
+    </select>
+    <select id="getUserProject" resultType="io.metersphere.dto.ProjectDTO">
+        SELECT DISTINCT p.*
+        FROM `group` g
+                     JOIN user_group ug ON g.id = ug.group_id
+                     JOIN project p ON p.id = ug.source_id
+        <where>
+            g.type = 'PROJECT'
+                    AND ug.user_id = #{proRequest.userId}
+            <if test="proRequest.workspaceId != null and proRequest.workspaceId != ''">
+                AND p.workspace_id = #{proRequest.workspaceId}
+            </if>
+            <if test="proRequest.name != null and proRequest.name != ''">
+                AND p.name LIKE #{proRequest.name, jdbcType=VARCHAR}
+            </if>
+        </where>
+    </select>
+    <select id="getSystemIdByProjectId" resultType="java.lang.String">
+        SELECT system_id
+        FROM project
+        WHERE id = #{0}
+    </select>
+    <select id="getProjectIds" resultType="java.lang.String">
+        SELECT id
+        FROM project;
+    </select>
+
+    <select id="getMaxSystemId" resultType="java.lang.String">
+        SELECT MAX(system_id)
+        FROM project
+    </select>
+    <select id="queryNameByIds" resultType="io.metersphere.base.domain.Project">
+        SELECT id, name, custom_num
+        FROM project
+                WHERE id IN
+        <foreach collection="ids" item="id" index="index"
+                 open="(" close=")" separator=",">
+            #{id}
+        </foreach>
+    </select>
+
+    <update id="removeIssuePlatform">
+        UPDATE project
+        <set>
+            <if test="platform == 'Jira'">
+                jira_key = NULL
+            </if>
+            <if test="platform == 'Tapd'">
+                tapd_id = NULL
+
+            </if>
+            <if test="platform == 'Zentao'">
+
+                zentao_id = NULL
+
+            </if>
+            <if test="platform == 'AzureDevops'">
+
+                azure_devops_id = NULL
+            </if>
+        </set>
+        WHERE project.id IN (SELECT id FROM (SELECT id
+                FROM project
+                WHERE workspace_id = #{workspaceId}) AS a)
+    </update>
+
+    <select id="selectTcpPorts" resultType="java.lang.Integer">
+        SELECT mock_tcp_port
+        FROM project
+        WHERE mock_tcp_port IS NOT NULL
+          AND mock_tcp_port != 0
+    </select>
+
+    <select id="selectProjectByResourceId" resultType="io.metersphere.base.domain.Project">
+        SELECT *
+        FROM project
+        WHERE id IN (
+                SELECT project_id
+                FROM test_plan
+                WHERE id = #{resourceId}
+                UNION
+                SELECT project_id
+                FROM test_case_review
+                WHERE id = #{resourceId}
+                UNION
+                SELECT project_id
+                FROM issues
+                WHERE id = #{resourceId}
+                UNION
+                SELECT project_id
+                FROM test_plan_report
+                             JOIN test_plan tp ON tp.id = test_plan_report.test_plan_id
+                WHERE test_plan_report.id = #{resourceId}
+                UNION
+                SELECT project_id
+                FROM test_case
+                WHERE id = #{resourceId}
+                UNION
+                SELECT project_id
+                FROM swagger_url_project
+                WHERE id = #{resourceId}
+                UNION
+                SELECT project_id
+                FROM api_scenario
+                WHERE id = #{resourceId}
+                UNION
+                SELECT project_id
+                FROM api_definition
+                WHERE id = #{resourceId}
+                UNION
+                SELECT project_id
+                FROM api_test_case
+                WHERE id = #{resourceId}
+                UNION
+                SELECT project_id
+                FROM api_scenario_report
+                WHERE id = #{resourceId}
+                UNION
+                SELECT project_id
+                FROM load_test
+                WHERE id = #{resourceId}
+                UNION
+                SELECT project_id
+                FROM load_test_report
+                WHERE id = #{resourceId})
+        LIMIT 1
+    </select>
+    <select id="getProjectMemberSize" resultType="java.lang.Long">
+        SELECT count(distinct (`user`.id)) FROM user_group JOIN `user` ON user_group.user_id = `user`.id
+        WHERE user_group.source_id = #{projectId}
+    </select>
+    <select id="getProjectByUserId" resultType="io.metersphere.base.domain.Project">
+        SELECT * from project where project.id in (SELECT user_group.source_id from user_group where user_group.user_id = #{userId})
+    </select>
+    <select id="getProjectPlanBugSize" resultType="java.lang.Integer">
+        select count(distinct(tci.issues_id)) from test_plan_test_case tptc
+            join test_case_issues tci on tptc.case_id = tci.test_case_id
+            join issues on tci.issues_id  = issues.id
+            join test_plan on tptc.plan_id = test_plan.id
+        where test_plan.project_id = #{projectId} and (issues.status != 'closed' or issues.status is null);
+    </select>
+</mapper>

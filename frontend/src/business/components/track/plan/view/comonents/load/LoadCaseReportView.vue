@@ -1,0 +1,431 @@
+<template>
+  <ms-container>
+    <ms-main-container>
+      <el-card v-loading="result.loading" v-if="show">
+        <el-row>
+          <el-col :span="16">
+            <el-row v-if="!isPlanReport">
+              <el-breadcrumb separator-class="el-icon-arrow-right">
+                <el-breadcrumb-item :to="{ path: '/performance/test/' + this.projectId }">{{ projectName }}
+                </el-breadcrumb-item>
+                <el-breadcrumb-item :to="{ path: '/performance/test/edit/' + this.testId }">{{ testName }}
+                </el-breadcrumb-item>
+                <el-breadcrumb-item>{{ reportName }}</el-breadcrumb-item>
+              </el-breadcrumb>
+            </el-row>
+            <el-row class="ms-report-view-btns" v-if="!isPlanReport">
+              <el-button :disabled="isReadOnly || report.status !== 'Running'" type="primary" plain size="mini"
+                         @click="dialogFormVisible=true">
+                {{ $t('report.test_stop_now') }}
+              </el-button>
+              <el-button :disabled="isReadOnly" type="info" plain size="mini" @click="handleExport(reportName)">
+                {{ $t('test_track.plan_view.export_report') }}
+              </el-button>
+              <el-button :disabled="isReadOnly" type="warning" plain size="mini" @click="downloadJtl()">
+                {{ $t('report.downloadJtl') }}
+              </el-button>
+            </el-row>
+          </el-col>
+          <el-col :span="8">
+            <span class="ms-report-time-desc">
+              {{ $t('report.test_duration', [minutes, seconds]) }}
+            </span>
+            <span class="ms-report-time-desc" v-if="startTime !== '0'">
+              {{ $t('report.test_start_time') }}：{{ startTime | timestampFormatDate }}
+            </span>
+            <span class="ms-report-time-desc" v-else>
+              {{ $t('report.test_start_time') }}：-
+            </span>
+            <span class="ms-report-time-desc" v-if="report.status === 'Completed' && endTime !== '0'">
+              {{ $t('report.test_end_time') }}：{{ endTime | timestampFormatDate }}
+            </span>
+            <span class="ms-report-time-desc" v-else>
+              {{ $t('report.test_end_time') }}：-
+            </span>
+          </el-col>
+        </el-row>
+
+        <el-divider/>
+        <div ref="resume">
+          <el-tabs v-model="active">
+            <el-tab-pane :label="$t('report.test_overview')">
+              <ms-report-test-overview :report="report" :is-share="isShare" :plan-report-template="planReportTemplate"
+                                       :share-id="shareId" ref="testOverview"/>
+            </el-tab-pane>
+            <el-tab-pane :label="$t('report.test_details')">
+              <ms-report-test-details :report="report" :is-share="isShare" :plan-report-template="planReportTemplate"
+                                      :share-id="shareId" ref="testDetails"/>
+            </el-tab-pane>
+            <el-tab-pane :label="$t('report.test_request_statistics')">
+              <ms-report-request-statistics :report="report" :is-share="isShare"
+                                            :plan-report-template="planReportTemplate"
+                                            :share-id="shareId" ref="requestStatistics"/>
+            </el-tab-pane>
+            <el-tab-pane :label="$t('report.test_error_log')">
+              <ms-report-error-log :report="report" :is-share="isShare" :plan-report-template="planReportTemplate"
+                                   :share-id="shareId" ref="errorLog"/>
+            </el-tab-pane>
+            <el-tab-pane :label="$t('report.test_log_details')">
+              <ms-report-log-details :report="report" :is-share="isShare" :plan-report-template="planReportTemplate"
+                                     :share-id="shareId"/>
+            </el-tab-pane>
+            <el-tab-pane :label="$t('report.test_monitor_details')">
+              <monitor-card :report="report" :is-share="isShare" :plan-report-template="planReportTemplate"
+                            :share-id="shareId"/>
+            </el-tab-pane>
+            <el-tab-pane :label="$t('report.test_config')">
+              <ms-test-configuration :report-id="reportId"/>
+            </el-tab-pane>
+          </el-tabs>
+        </div>
+
+        <ms-performance-report-export v-if="!isShare && !planReportTemplate" :title="reportName"
+                                      id="performanceReportExport" v-show="reportExportVisible"
+                                      :report="report"/>
+
+      </el-card>
+      <el-dialog :title="$t('report.test_stop_now_confirm')" :visible.sync="dialogFormVisible" width="30%"
+                 :append-to-body="true">
+        <p v-html="$t('report.force_stop_tips')"/>
+        <p v-html="$t('report.stop_tips')"/>
+        <div slot="footer" class="dialog-footer">
+          <el-button type="danger" size="small" @click="stopTest(true)">{{ $t('report.force_stop_btn') }}
+          </el-button>
+          <el-button type="primary" size="small" @click="stopTest(false)">{{ $t('report.stop_btn') }}
+          </el-button>
+        </div>
+      </el-dialog>
+    </ms-main-container>
+  </ms-container>
+</template>
+
+<script>
+
+import {exportPdf} from "@/common/js/utils";
+import html2canvas from 'html2canvas';
+import {Message} from "element-ui";
+import MsPerformanceReportExport from "@/business/components/performance/report/PerformanceReportExport";
+import MsReportErrorLog from "@/business/components/performance/report/components/ErrorLog";
+import MsReportLogDetails from "@/business/components/performance/report/components/LogDetails";
+import MsReportRequestStatistics from "@/business/components/performance/report/components/RequestStatistics";
+import MsReportTestOverview from "@/business/components/performance/report/components/TestOverview";
+import MsContainer from "@/business/components/common/components/MsContainer";
+import MsMainContainer from "@/business/components/common/components/MsMainContainer";
+import MonitorCard from "@/business/components/performance/report/components/MonitorCard";
+import MsReportTestDetails from '@/business/components/performance/report/components/TestDetails';
+import {
+  getPerformanceReport,
+  getPerformanceReportTime,
+  getSharePerformanceReport,
+  getSharePerformanceReportTime
+} from "@/network/load-test";
+import MsTestConfiguration from "@/business/components/performance/report/components/TestConfiguration";
+
+
+export default {
+  name: "LoadCaseReportView",
+  components: {
+    MsTestConfiguration,
+    MonitorCard,
+    MsPerformanceReportExport,
+    MsReportErrorLog,
+    MsReportLogDetails,
+    MsReportRequestStatistics,
+    MsReportTestOverview,
+    MsReportTestDetails,
+    MsContainer,
+    MsMainContainer,
+  },
+  data() {
+    return {
+      result: {},
+      active: '0',
+      status: '',
+      reportName: '',
+      testId: '',
+      testName: '',
+      projectId: '',
+      projectName: '',
+      startTime: '0',
+      endTime: '0',
+      minutes: '0',
+      seconds: '0',
+      title: 'Logging',
+      report: {},
+      websocket: null,
+      dialogFormVisible: false,
+      reportExportVisible: false,
+      testPlan: {testResourcePoolId: null},
+      show: true,
+      test: {testResourcePoolId: null},
+    };
+  },
+  props: {
+    reportId: String,
+    isReadOnly: {
+      type: Boolean,
+      default: false
+    },
+    isPlanReport: Boolean,
+    isShare: Boolean,
+    shareId: String,
+    planReportTemplate: Object
+  },
+  watch: {
+    reportId() {
+      this.init();
+    }
+  },
+  methods: {
+    initBreadcrumb(callback) {
+      if (this.isPlanReport) {
+        return;
+      }
+      if (this.reportId) {
+        this.result = this.$get("/performance/report/test/pro/info/" + this.reportId, res => {
+          let data = res.data;
+          if (data) {
+            this.reportName = data.name;
+            this.testId = data.testId;
+            this.testName = data.testName;
+            this.projectId = data.projectId;
+            this.projectName = data.projectName;
+            if (callback) callback(res);
+          } else {
+            this.$error(this.$t('report.not_exist'));
+          }
+        });
+      }
+    },
+    initReportTimeInfo() {
+      if (this.status === 'Starting') {
+        this.clearData();
+        return;
+      }
+      if (this.planReportTemplate) {
+        this.handleInitReportTimeInfo(this.planReportTemplate);
+      } else if (this.isShare) {
+        if (this.reportId) {
+          this.result = getSharePerformanceReportTime(this.shareId, this.reportId)
+            .then((res) => {
+              this.handleInitReportTimeInfo(res.data.data);
+            }).catch(() => {
+              this.clearData();
+            });
+        }
+      } else {
+        if (this.reportId) {
+          this.result = getPerformanceReportTime(this.reportId).then(res => {
+            this.handleInitReportTimeInfo(res.data.data);
+          }).catch(() => {
+            this.clearData();
+          });
+        }
+      }
+    },
+    handleInitReportTimeInfo(data) {
+      if (data) {
+        this.startTime = data.startTime;
+        this.endTime = data.endTime;
+        let duration = data.duration;
+        this.minutes = Math.floor(duration / 60);
+        this.seconds = duration % 60;
+      }
+    },
+    initWebSocket() {
+      if (this.isPlanReport) {
+        return;
+      }
+      let protocol = "ws://";
+      if (window.location.protocol === 'https:') {
+        protocol = "wss://";
+      }
+      const uri = protocol + window.location.host + "/performance/report/" + this.reportId;
+      this.websocket = new WebSocket(uri);
+      this.websocket.onmessage = this.onMessage;
+      this.websocket.onopen = this.onOpen;
+      this.websocket.onerror = this.onError;
+      this.websocket.onclose = this.onClose;
+    },
+    checkReportStatus(status) {
+      switch (status) {
+        case 'Error':
+          // this.$warning(this.$t('report.generation_error'));
+          this.active = '4';
+          break;
+        case 'Starting':
+          this.$alert(this.$t('report.start_status'));
+          break;
+        case 'Reporting':
+        case 'Running':
+        case 'Completed':
+        default:
+          break;
+      }
+    },
+    clearData() {
+      this.startTime = '0';
+      this.endTime = '0';
+      this.minutes = '0';
+      this.seconds = '0';
+    },
+    stopTest(forceStop) {
+      this.result = this.$get('/performance/stop/' + this.reportId + '/' + forceStop, () => {
+        this.$success(this.$t('report.test_stop_success'));
+        if (forceStop) {
+          this.$router.push('/performance/report/all');
+        } else {
+          this.report.status = 'Completed';
+        }
+      });
+      this.dialogFormVisible = false;
+    },
+    rerun(testId) {
+      this.$confirm(this.$t('report.test_rerun_confirm'), '', {
+        confirmButtonText: this.$t('commons.confirm'),
+        cancelButtonText: this.$t('commons.cancel'),
+        type: 'warning'
+      }).then(() => {
+        // this.result = this.$post('/performance/run', {id: testId, triggerMode: 'MANUAL'}, (response) => {
+        //   this.reportId = response.data;
+        //   this.$router.push({path: '/performance/report/view/' + this.reportId});
+        //   // 注册 socket
+        //   this.initWebSocket();
+        // })
+      }).catch(() => {
+      });
+    },
+    onOpen() {
+      // window.console.log("socket opening.");
+    },
+    onError(e) {
+      // window.console.error(e)
+    },
+    onMessage(e) {
+      this.$set(this.report, "refresh", e.data); // 触发刷新
+      if (e.data.startsWith('Error')) {
+        this.$set(this.report, "status", 'Error');
+        this.$warning(e.data);
+        return;
+      }
+      this.$set(this.report, "status", 'Running');
+      this.status = 'Running';
+      this.initReportTimeInfo();
+      // window.console.log('receive a message:', e.data);
+    },
+    onClose(e) {
+      if (e.code === 1005) {
+        // 强制删除之后关闭socket，不用刷新report
+        return;
+      }
+      this.$set(this.report, "refresh", Math.random()); // 触发刷新
+      this.$set(this.report, "status", 'Completed');
+      this.initReportTimeInfo();
+      // window.console.log("socket closed.");
+    },
+    handleExport(name) {
+      this.result.loading = true;
+      this.reportExportVisible = true;
+      let reset = this.exportReportReset;
+
+      this.$nextTick(function () {
+        setTimeout(() => {
+          let ids = ['testOverview', 'testDetails', 'requestStatistics', 'errorLog'];
+          let promises = [];
+          ids.forEach(id => {
+            let promise = html2canvas(document.getElementById(id), {scale: 2});
+            promises.push(promise);
+          });
+          Promise.all(promises).then(function (canvas) {
+            exportPdf(name, canvas);
+            reset();
+          });
+        }, 1000);
+      });
+    },
+    exportReportReset() {
+      this.reportExportVisible = false;
+      this.result.loading = false;
+    },
+    downloadJtl() {
+      let config = {
+        url: "/performance/report/jtl/download/" + this.reportId,
+        method: 'get',
+        responseType: 'blob'
+      };
+      this.result = this.$request(config).then(response => {
+        const content = response.data;
+        const blob = new Blob([content]);
+        if ("download" in document.createElement("a")) {
+          // 非IE下载
+          //  chrome/firefox
+          let aTag = document.createElement('a');
+          aTag.download = this.reportName + ".jtl";
+          aTag.href = URL.createObjectURL(blob);
+          aTag.click();
+          URL.revokeObjectURL(aTag.href);
+        } else {
+          // IE10+下载
+          navigator.msSaveBlob(blob, this.filename);
+        }
+      }).catch(e => {
+        let text = e.response.data.text();
+        text.then((data) => {
+          Message.error({message: JSON.parse(data).message || e.message, showClose: true});
+        });
+      });
+    },
+    init() {
+      this.clearData();
+      if (this.planReportTemplate) {
+        this.handleInit(this.planReportTemplate);
+      } else if (this.isShare) {
+        this.result = getSharePerformanceReport(this.shareId, this.reportId, data => {
+          this.handleInit(data);
+        });
+      } else {
+        this.result = getPerformanceReport(this.reportId, data => {
+          this.handleInit(data);
+        });
+      }
+    },
+    handleInit(data) {
+      if (data) {
+        this.status = data.status;
+        this.$set(this, "report", data);
+        this.$set(this.test, "testResourcePoolId", data.testResourcePoolId);
+        this.checkReportStatus(data.status);
+        if (this.status === "Completed" || this.status === "Running") {
+          this.initReportTimeInfo();
+        }
+        this.initBreadcrumb();
+        this.initWebSocket();
+      } else {
+        this.$error(this.$t('report.not_exist'));
+      }
+    }
+  },
+  created() {
+    this.init();
+  }
+};
+</script>
+
+<style scoped>
+
+.ms-report-view-btns {
+  margin-top: 15px;
+}
+
+.ms-report-time-desc {
+  text-align: left;
+  display: block;
+  color: #5C7878;
+}
+
+.report-export .el-card {
+  margin-bottom: 15px;
+}
+
+</style>
+
